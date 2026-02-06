@@ -1,0 +1,21 @@
+# ESPHome secrets - NEVER commit this file!
+secrets.yaml
+
+# ESPHome build artifacts
+.esphome/
+.pioenvs/
+.piolibdeps/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Compiled files
+*.pyc
+__pycache__/

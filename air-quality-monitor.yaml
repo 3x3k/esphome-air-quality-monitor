@@ -1,0 +1,720 @@
+# ============================================================================
+# ESPHome LVGL Air Quality Monitor - Optimized for NO PSRAM
+# ============================================================================
+# Device: ESP32-2432S028 (CYD - Cheap Yellow Display, 320×240, NO PSRAM)
+# Sensors: SCD4x (CO2/Temp/Humidity) + SGP4x (VOC)
+# Use Case: 24/7 bedroom/room air quality monitoring
+# 
+# GitHub: https://github.com/el-bakkali/esphome-air-quality-monitor
+# 3D Case: https://www.printables.com/model/1586920-cyd-cheap-yellow-display-modular-mod-rear
+# ============================================================================
+
+esphome:
+  name: air-quality-monitor
+  friendly_name: Air Quality Monitor
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      # NO PSRAM - disable SPIRAM
+      CONFIG_SPIRAM_USE: "n"
+      CONFIG_ESP32_IRAM_AS_8BIT_ACCESSIBLE_MEMORY: "n"
+      # Size optimization for limited RAM
+      CONFIG_COMPILER_OPTIMIZATION_SIZE: "y"
+    advanced:
+      minimum_chip_revision: "3.1"
+      freertos_in_iram: false        # ~8 KB IRAM saved
+      ringbuf_in_iram: false          # ~1.5 KB IRAM saved
+      heap_in_iram: false             # ~4-6 KB IRAM saved
+      disable_libc_locks_in_iram: true  # ~1.3 KB IRAM saved
+
+# ============================================================================
+# DEBUG & MONITORING - Critical for NO PSRAM stability
+# ============================================================================
+debug:
+  update_interval: 60s
+
+logger:
+  level: WARN
+  # Reduce log buffer for memory savings
+  logs:
+    component: ERROR
+    wifi: WARN
+    api: WARN
+
+# ============================================================================
+# CONNECTIVITY
+# ============================================================================
+api:
+  encryption:
+    key: !secret api_encryption_key
+  # Reboot if API disconnected for 15min (stability)
+  reboot_timeout: 15min
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# Safe mode for failed OTA recovery
+safe_mode:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+  min_auth_mode: WPA2
+  power_save_mode: none
+  # REDUCED from 15min - faster recovery from WiFi issues
+  reboot_timeout: 5min
+  # AP mode fallback
+  ap:
+    ssid: "Air-Quality-Monitor"
+    password: !secret ap_password
+
+captive_portal:
+  
+# ============================================================================
+# I2C & SPI CONFIGURATION
+# ============================================================================
+i2c:
+  - id: bus_a
+    sda: 27
+    scl: 22
+    scan: false  # Disable scanning after initial setup for stability
+    frequency: 100kHz  # Conservative speed for sensor reliability
+
+spi:
+  - id: tft
+    clk_pin: 14
+    mosi_pin: 13
+    miso_pin:
+      number: 12
+      ignore_strapping_warning: true
+  - id: touch
+    clk_pin: 25
+    mosi_pin: 32
+    miso_pin: 39
+
+# ============================================================================
+# OUTPUTS & LIGHTS
+# ============================================================================
+output:
+  - id: backlight_pwm
+    platform: ledc
+    pin: 21
+  - id: output_red
+    platform: ledc
+    pin: 4
+    inverted: true
+  - id: output_green
+    platform: ledc
+    pin: 16
+    inverted: true
+  - id: output_blue
+    platform: ledc
+    pin: 17
+    inverted: true
+
+light:
+  - id: backlight
+    platform: monochromatic
+    output: backlight_pwm
+    name: Display Backlight
+    restore_mode: ALWAYS_ON
+    default_transition_length: 500ms
+  - id: led
+    platform: rgb
+    red: output_red
+    green: output_green
+    blue: output_blue
+    restore_mode: ALWAYS_OFF
+
+# ============================================================================
+# DISPLAY - Optimized for NO PSRAM
+# ============================================================================
+display:
+  - id: main_display
+    platform: mipi_spi
+    model: esp32-2432S028
+    spi_id: tft
+    cs_pin:
+      number: 15
+      ignore_strapping_warning: true
+    dc_pin:
+      number: 2
+      ignore_strapping_warning: true
+    data_rate: 40MHz
+    invert_colors: false
+    color_order: bgr
+    dimensions:
+      width: 320
+      height: 240
+    rotation: 180°
+    auto_clear_enabled: false
+    update_interval: never
+
+# ============================================================================
+# TOUCHSCREEN
+# ============================================================================
+touchscreen:
+  - id: main_touchscreen
+    display: main_display
+    platform: xpt2046
+    spi_id: touch
+    cs_pin: 33
+    interrupt_pin: 36
+    threshold: 400
+    calibration:
+      x_min: 280
+      x_max: 3860
+      y_min: 340
+      y_max: 3860
+    transform:
+      mirror_x: true
+    on_touch:
+      - light.turn_on:
+          id: backlight
+          brightness: 100%
+      # Stop anti-burn-in if user touches screen
+      - if:
+          condition:
+            switch.is_on: switch_antiburn
+          then:
+            - switch.turn_off: switch_antiburn
+
+# ============================================================================
+# TIME
+# ============================================================================
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/London  # Change to your timezone
+    # Update time every 6 hours for accuracy
+    update_interval: 6h
+    # Weekly maintenance reboot - cleaner than interval-based approach
+    on_time:
+      - cron: '0 0 4 * * SUN'  # Every Sunday at 4:00 AM
+        then:
+          - logger.log: "Scheduled weekly maintenance reboot"
+          - delay: 5s
+          - button.press: restart_button
+
+# ============================================================================
+# SENSORS - Optimized with filtering for display stability
+# ============================================================================
+sensor:
+  # --- Debug/Monitoring Sensors ---
+  - platform: debug
+    free:
+      id: free_heap
+      name: "Free Heap"
+      entity_category: diagnostic
+      # Alert if heap drops below 30KB (critical threshold)
+      on_value_range:
+        - below: 30000
+          then:
+            - logger.log:
+                level: ERROR
+                format: "CRITICAL: Free heap below 30KB: %.0f bytes"
+                args: ['x']
+            # Visual alert on display
+            - lvgl.label.update:
+                id: co2_status
+                text: "MEM!"
+            - lvgl.widget.update:
+                id: co2_status
+                text_color: 0xF44336
+    block:
+      id: largest_free_block
+      name: "Largest Free Block"
+      entity_category: diagnostic
+      # Alert if fragmentation is severe (largest block < 20KB)
+      on_value_range:
+        - below: 20000
+          then:
+            - logger.log:
+                level: WARN
+                format: "WARNING: Heap fragmentation - largest block: %.0f bytes"
+                args: ['x']
+    loop_time:
+      id: loop_time
+      name: "Loop Time"
+      entity_category: diagnostic
+      # Alert if loop time exceeds 500ms (LVGL performance issue)
+      on_value_range:
+        - above: 500
+          then:
+            - logger.log:
+                level: WARN
+                format: "WARNING: Loop time exceeded 500ms: %.0f ms"
+                args: ['x']
+        # Critical alert for severe lag
+        - above: 1000
+          then:
+            - logger.log:
+                level: ERROR
+                format: "CRITICAL: Loop time exceeded 1000ms: %.0f ms - consider restart"
+                args: ['x']
+
+  - platform: uptime
+    id: uptime_sensor
+    name: "Uptime"
+    entity_category: diagnostic
+    update_interval: 60s
+
+  - platform: wifi_signal
+    id: wifi_signal_db
+    name: "WiFi Signal"
+    entity_category: diagnostic
+    update_interval: 60s
+
+  # --- SCD4x CO2/Temp/Humidity ---
+  # 30s update with low_power_periodic is optimal for continuous monitoring
+  - platform: scd4x
+    i2c_id: bus_a
+    co2:
+      id: co2_sensor
+      name: "CO2"
+      # Exponential Moving Average filter to reduce jitter on display
+      filters:
+        - exponential_moving_average:
+            alpha: 0.5  # Increased from 0.3 - faster response to actual changes
+            send_every: 1
+        # Clamp to reasonable range to prevent display overflow
+        - clamp:
+            min_value: 400
+            max_value: 5000
+      on_value:
+        # Consolidated update logic - fewer LVGL calls, more efficient
+        - lambda: |-
+            // Update CO2 value text
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%.0f", x);
+            lv_label_set_text(id(co2_value), buf);
+            
+            // Determine colors and status based on CO2 level
+            uint32_t text_color;
+            uint32_t bar_color;
+            const char* status;
+            
+            if (x < 800) {
+              text_color = 0x4CAF50;  // Green
+              bar_color = 0x1B5E20;
+              status = "GOOD";
+            } else if (x < 1200) {
+              text_color = 0xFFC107;  // Amber
+              bar_color = 0xFF8F00;
+              status = "FAIR";
+            } else {
+              text_color = 0xF44336;  // Red
+              bar_color = 0xB71C1C;
+              status = "POOR";
+            }
+            
+            // Calculate bar value (0-100 scale, clamped at 2000 ppm)
+            int bar_val = (int)(std::min(x, 2000.0f) / 2000.0f * 100.0f);
+            
+            // Apply all updates efficiently
+            lv_obj_set_style_text_color(id(co2_value), lv_color_hex(text_color), 0);
+            lv_bar_set_value(id(co2_bar), bar_val, LV_ANIM_ON);
+            lv_obj_set_style_bg_color(id(co2_bar), lv_color_hex(bar_color), LV_PART_INDICATOR);
+            lv_label_set_text(id(co2_status), status);
+    temperature:
+      id: temp_sensor
+      name: "Temperature"
+      filters:
+        - exponential_moving_average:
+            alpha: 0.5
+            send_every: 1
+      on_value:
+        - lvgl.label.update:
+            id: temp_value
+            text:
+              format: "%.1f°"
+              args: ['x']
+    humidity:
+      id: humidity_sensor
+      name: "Humidity"
+      filters:
+        - exponential_moving_average:
+            alpha: 0.5
+            send_every: 1
+      on_value:
+        - lvgl.label.update:
+            id: humidity_value
+            text:
+              format: "%.0f%%"
+              args: ['x']
+    # Sensor configuration
+    update_interval: 30s
+    automatic_self_calibration: true
+    measurement_mode: low_power_periodic
+    altitude_compensation: 20m
+    # Temperature offset: Adjust based on actual measurements
+    # 6°C is typical for enclosed sensors
+    temperature_offset: 6.0
+
+  # --- SGP4x VOC ---
+  - platform: sgp4x
+    i2c_id: bus_a
+    voc:
+      id: voc_sensor
+      name: "VOC Index"
+      filters:
+        - exponential_moving_average:
+            alpha: 0.2  # Decreased from 0.3 - VOC index is inherently noisy
+            send_every: 1
+        - clamp:
+            min_value: 0
+            max_value: 500
+      on_value:
+        - lvgl.label.update:
+            id: voc_value
+            text:
+              format: "%.0f"
+              args: ['x']
+        # VOC color coding (100 = normal baseline)
+        - if:
+            condition:
+              lambda: 'return x <= 150;'
+            then:
+              - lvgl.widget.update:
+                  id: voc_value
+                  text_color: 0x4CAF50
+            else:
+              - if:
+                  condition:
+                    lambda: 'return x <= 250;'
+                  then:
+                    - lvgl.widget.update:
+                        id: voc_value
+                        text_color: 0xFFC107
+                  else:
+                    - lvgl.widget.update:
+                        id: voc_value
+                        text_color: 0xF44336
+    update_interval: 30s
+    compensation:
+      temperature_source: temp_sensor
+      humidity_source: humidity_sensor
+    store_baseline: true
+
+# ============================================================================
+# BINARY SENSORS
+# ============================================================================
+binary_sensor:
+  - platform: status
+    id: system_status
+    name: "System Status"
+
+# ============================================================================
+# TEXT SENSORS
+# ============================================================================
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+      entity_category: diagnostic
+    ssid:
+      name: "Connected SSID"
+      entity_category: diagnostic
+    mac_address:
+      name: "MAC Address"
+      entity_category: diagnostic
+
+  # Device information for troubleshooting
+  - platform: debug
+    device:
+      name: "Device Info"
+      entity_category: diagnostic
+    reset_reason:
+      name: "Reset Reason"
+      entity_category: diagnostic
+
+# ============================================================================
+# BUTTONS
+# ============================================================================
+button:
+  - platform: restart
+    id: restart_button
+    name: "Restart"
+
+  - platform: safe_mode
+    name: "Restart (Safe Mode)"
+
+# ============================================================================
+# SWITCHES - Anti Burn-in Control
+# ============================================================================
+switch:
+  - platform: template
+    name: "Anti Burn-in"
+    id: switch_antiburn
+    icon: mdi:television-shimmer
+    optimistic: true
+    entity_category: config
+    # Turn ON: Start the snow/static effect to exercise pixels
+    turn_on_action:
+      - logger.log: "Starting anti-burn-in routine (white noise)"
+      # Resume first if already paused (edge case)
+      - if:
+          condition: lvgl.is_paused
+          then:
+            - lvgl.resume:
+            - lvgl.widget.redraw:
+      # Pause LVGL with snow effect - random colored pixels
+      - lvgl.pause:
+          show_snow: true
+    # Turn OFF: Stop the effect and restore normal display
+    turn_off_action:
+      - logger.log: "Stopping anti-burn-in routine"
+      - if:
+          condition: lvgl.is_paused
+          then:
+            - lvgl.resume:
+            - lvgl.widget.redraw:
+            - light.turn_on:
+                id: backlight
+                brightness: 100%
+
+# ============================================================================
+# NUMBER - Adjustable settings from Home Assistant
+# ============================================================================
+number:
+  - platform: template
+    name: "Display Brightness"
+    id: display_brightness
+    icon: mdi:brightness-percent
+    min_value: 10
+    max_value: 100
+    step: 10
+    initial_value: 100
+    restore_value: true
+    unit_of_measurement: "%"
+    optimistic: true
+    on_value:
+      then:
+        - light.turn_on:
+            id: backlight
+            brightness: !lambda 'return x / 100.0;'
+
+# ============================================================================
+# LVGL CONFIGURATION - FLAT HIERARCHY FOR NO PSRAM
+# ============================================================================
+# Memory Budget:
+#   Buffer: 320 × 240 × 2 bytes × 25% = 38,400 bytes
+#   Per widget: ~100-200 bytes (labels), ~200-400 bytes (complex)
+#   Estimated widget total: ~3KB for this layout
+#   Total LVGL footprint: ~45-50KB
+# ============================================================================
+
+lvgl:
+  log_level: WARN
+  # 25% buffer - optimal for NO PSRAM per ESPHome docs
+  buffer_size: 25%
+  # Solid background color (no gradients)
+  disp_bg_color: 0x303030
+
+  # Draw completion tracking for stability monitoring
+  on_draw_end:
+    - lambda: |-
+        // Track draw performance in debug builds
+        // Uncomment for debugging display issues:
+        // static uint32_t last_draw = 0;
+        // ESP_LOGD("lvgl", "Draw completed in %lu ms", millis() - last_draw);
+        // last_draw = millis();
+
+  # Touch configuration
+  touchscreens:
+    - touchscreen_id: main_touchscreen
+      long_press_time: 400ms
+
+  # Screen timeout - dim after 60s idle
+  on_idle:
+    - timeout: 60s
+      then:
+        - light.turn_on:
+            id: backlight
+            brightness: 50%
+    - timeout: 300s
+      then:
+        - light.turn_on:
+            id: backlight
+            brightness: 20%
+
+  resume_on_input: true
+
+  # =========================================================================
+  # FLAT WIDGET LAYOUT - Zero nested obj containers
+  # All widgets placed directly on page with absolute positioning
+  # =========================================================================
+  pages:
+    - id: main_page
+      bg_color: 0x0D1117
+      widgets:
+        # ----- HEADER BAR (simple rectangle via styling) -----
+        - label:
+            id: header_title
+            x: 8
+            y: 6
+            text: "Air Quality"
+            text_font: montserrat_14
+            text_color: 0xA0A0A0
+
+        - label:
+            id: clock_label
+            x: 248
+            y: 6
+            width: 64
+            text_align: RIGHT
+            text: "00:00"
+            text_font: montserrat_14
+            text_color: 0x8B949E
+
+        # ----- CO2 MAIN DISPLAY -----
+        # Large 48pt value for glanceability
+        - label:
+            id: co2_label
+            x: 8
+            y: 32
+            text: "CO2"
+            text_font: montserrat_12
+            text_color: 0x8B949E
+
+        - label:
+            id: co2_value
+            x: 8
+            y: 48
+            width: 180
+            text: "---"
+            text_font: montserrat_48
+            text_color: 0x4CAF50
+
+        - label:
+            id: co2_unit
+            x: 8
+            y: 105
+            text: "ppm"
+            text_font: montserrat_12
+            text_color: 0x6E7681
+
+        - label:
+            id: co2_status
+            x: 260
+            y: 70
+            width: 52
+            text_align: CENTER
+            text: "---"
+            text_font: montserrat_14
+            text_color: 0xFFFFFF
+
+        # CO2 Bar indicator - MORE MEMORY EFFICIENT than arc
+        # Bar uses ~200 bytes vs Arc ~400 bytes
+        # Also simpler visual, easier to read at a glance
+        - bar:
+            id: co2_bar
+            x: 8
+            y: 125
+            width: 304
+            height: 12
+            min_value: 0
+            max_value: 100
+            value: 0
+            radius: 6
+            bg_color: 0x21262D
+            border_width: 0
+            indicator:
+              bg_color: 0x1B5E20
+              radius: 6
+
+        # ----- SECONDARY READINGS ROW -----
+        # Temperature
+        - label:
+            x: 8
+            y: 148
+            text: "Temp"
+            text_font: montserrat_10
+            text_color: 0x808080
+
+        - label:
+            id: temp_value
+            x: 8
+            y: 162
+            width: 90
+            text: "--.-°"
+            text_font: montserrat_24
+            text_color: 0xFF7B54
+
+        # Humidity
+        - label:
+            x: 115
+            y: 148
+            text: "Humidity"
+            text_font: montserrat_10
+            text_color: 0x808080
+
+        - label:
+            id: humidity_value
+            x: 115
+            y: 162
+            width: 90
+            text: "--%"
+            text_font: montserrat_24
+            text_color: 0x54B4FF
+
+        # VOC
+        - label:
+            x: 222
+            y: 148
+            text: "VOC"
+            text_font: montserrat_10
+            text_color: 0x8B949E
+
+        - label:
+            id: voc_value
+            x: 222
+            y: 162
+            width: 90
+            text: "---"
+            text_font: montserrat_24
+            text_color: 0xB388FF
+
+# ============================================================================
+# INTERVALS - Minimal for stability
+# ============================================================================
+interval:
+  # Clock update - once per minute
+  - interval: 1min
+    then:
+      - lvgl.label.update:
+          id: clock_label
+          text:
+            format: "%02d:%02d"
+            args: ['id(sntp_time).now().hour', 'id(sntp_time).now().minute']
+
+  # Memory monitoring - every 5 minutes
+  - interval: 5min
+    then:
+      - lambda: |-
+          float heap = id(free_heap).state;
+          float block = id(largest_free_block).state;
+          float uptime_hrs = id(uptime_sensor).state / 3600.0;
+          ESP_LOGI("monitor", "Heap: %.0f, Block: %.0f, Uptime: %.1fh", 
+                   heap, block, uptime_hrs);
+
+  # Nightly LCD burn-in prevention (2 AM for 15 minutes)
+  # Exercises pixels to prevent image persistence on 24/7 display
+  - interval: 1h
+    then:
+      - if:
+          condition:
+            lambda: |-
+              auto time = id(sntp_time).now();
+              return time.is_valid() && 
+                     time.hour == 2 &&
+                     time.minute == 0;
+          then:
+            - switch.turn_on: switch_antiburn
+            - delay: 15min
+            - switch.turn_off: switch_antiburn
